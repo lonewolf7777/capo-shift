@@ -1,5 +1,5 @@
 // Capo Shift Offline-Cache. Bei Änderungen an der App VERSION erhöhen.
-const VERSION='capo-shift-v1';
+const VERSION='capo-shift-v2';
 const FILES=[
   "./",
   "apple-touch-icon.png",
