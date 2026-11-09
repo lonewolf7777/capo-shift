@@ -1,5 +1,5 @@
 // Capo Shift Offline-Cache. Bei Änderungen an der App VERSION erhöhen.
-const VERSION='capo-shift-v2';
+const VERSION='capo-shift-v3';
 const FILES=[
   "./",
   "apple-touch-icon.png",
@@ -25,7 +25,8 @@ const FILES=[
   "tesseract-worker.min.js",
   "tesseract.min.js",
 ];
-self.addEventListener('install',e=>{e.waitUntil(caches.open(VERSION).then(c=>c.addAll(FILES)).then(()=>self.skipWaiting()));});
+// cache:'reload' umgeht den Browser-Cache, damit ein Update nie alte Dateien übernimmt
+self.addEventListener('install',e=>{e.waitUntil(caches.open(VERSION).then(c=>c.addAll(FILES.map(f=>new Request(f,{cache:'reload'})))).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==VERSION).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
 self.addEventListener('fetch',e=>{
   if(e.request.method!=='GET') return;
