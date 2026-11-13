@@ -121,6 +121,9 @@ h1{font-family:var(--f-display);font-weight:700;font-size:30px;line-height:1.05;
 .inline > span{font-size:13px;color:var(--muted)}
 
 .sheetcol{display:flex;flex-direction:column;gap:12px;min-width:0}
+.tools{display:flex;align-items:center;gap:10px}
+.btn.small{min-height:34px;padding:4px 12px;font-size:13px}
+.btn.danger{border-color:var(--err);color:var(--err)}
 .toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
 .paper{background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:clamp(20px,4vw,40px);min-width:0}
 .paper header{display:flex;flex-direction:column;gap:6px;padding-bottom:16px;margin-bottom:18px;border-bottom:1px solid var(--line)}
@@ -218,7 +221,10 @@ textarea#editor{width:100%;min-height:62vh;resize:vertical;font-family:var(--f-m
           <button type="button" data-v="preview" aria-pressed="true">Neue Griffe</button>
           <button type="button" data-v="edit" aria-pressed="false">Original bearbeiten</button>
         </div>
-        <span class="hint" id="countHint"></span>
+        <div class="tools">
+          <span class="hint" id="countHint"></span>
+          <button class="btn small" type="button" id="clearBtn">Blatt leeren</button>
+        </div>
       </div>
       <article class="paper" id="paper">
         <header>
@@ -362,13 +368,20 @@ function estimateKey(ch){
   return minor?{pc:rel,minor:true}:{pc:best.k,minor:false};
 }
 function detectNotation(text){
+  // Deutsch nur bei echten Hinweisen: H/Hm/H7, Fis, Cis, Es, As … Einzelne Kleinbuchstaben zählen nur ohne Gegenbeweis.
+  let strong=0, weak=0, intl=0, upperB=false;
   for(const line of text.split('\n')){
     if(classify(line,'de').type!=='chord') continue;
     for(const t of line.trim().split(/\s+/)){
-      const c=splitWrap(t)[1];
-      if(/^[Hh](?![a-z])|^[Hh](?=m|maj|sus|add|dim)|^[A-Ha-h](is|es)|^[AE]s(?!u)|^[a-h](?:$|\/|\d)/.test(c)) return 'de';
+      const c=splitWrap(t)[1]; if(!c) continue;
+      if(/^[Hh](?:$|m(?!aj)|maj|7|9|6|sus|add|dim|\/)/.test(c)||/^[A-Ha-h](?:is|es)(?:$|m|7|\/|sus|add)/.test(c)||/^[AEae]s(?:$|m|7|\/)/.test(c)) strong++;
+      else if(/^[a-h](?:$|\/|\d)/.test(c)) weak++;
+      else if(/^[A-G](?:#|b)?m(?!aj)/.test(c)||/^[A-G](?:#|b)/.test(c)) intl++;
+      if(/^B(?!b)/.test(c)) upperB=true;
     }
   }
+  if(strong>=2||(strong===1&&!upperB)) return 'de';
+  if(weak>=3&&intl===0) return 'de';
   return 'intl';
 }
 const FLAT_MAJ=new Set([5,10,3,8,1,6]), FLAT_MIN=new Set([2,7,0,5,10,3]);
@@ -502,16 +515,57 @@ function reconstructPage(lines){
     if(l.words.length!==1||l.words[0].t.length>3) return true;
     if(l.words[0].x0>rightEdge+cw*2) return false;
     const up=i>0?l.y-lines[i-1].y:Infinity, down=i<lines.length-1?lines[i+1].y-l.y:Infinity;
-    return !(l.words[0].t.length<=2&&up>pitch*1.75&&down>pitch*1.75);
+    return !(l.words[0].t.length<=2&&up>pitch*1.75&&down>pitch*1.75&&!fixChordToken(l.words[0].t));
   });
   const out=[];
   keep.forEach((l,i)=>{ if(i>0&&(l.y-keep[i-1].y)>pitch*1.75) out.push(''); out.push(l.str.replace(/\s+$/,'').replace(/ı/g,'i')); });
   const ind=Math.min(...out.filter(s=>s.trim()).map(s=>s.match(/^ */)[0].length));
   return ind>0&&isFinite(ind)?out.map(s=>s.slice(ind)):out;
 }
+// Zweispaltige Blätter: senkrechten Leerraum zwischen zwei Textspalten finden
+function splitColumns(lines){
+  const n=lines.length; if(n<8) return null;
+  const all=lines.flatMap(l=>l.words); if(all.length<20) return null;
+  const cw=median(all.filter(w=>w.t.length>=3).map(w=>(w.x1-w.x0)/w.t.length))||10;
+  const xs0=all.map(w=>w.x0).sort((a,b)=>a-b), xs1=all.map(w=>w.x1).sort((a,b)=>a-b);
+  const L=xs0[Math.floor(xs0.length*0.02)], R=xs1[Math.ceil(xs1.length*0.98)-1];
+  if(R-L<cw*30) return null;
+  const bin=cw/2, nb=Math.ceil((R-L)/bin)+1, cnt=new Int32Array(nb);
+  for(const l of lines){ const hit=new Uint8Array(nb); for(const w of l.words){ for(let b=Math.max(0,Math.floor((w.x0-L)/bin));b<=Math.min(nb-1,Math.floor((w.x1-L)/bin));b++) hit[b]=1; } for(let b=0;b<nb;b++) cnt[b]+=hit[b]; }
+  const lo=Math.floor(nb*0.25), hi=Math.ceil(nb*0.78), maxCross=Math.max(1,Math.floor(n*0.06));
+  let best=null, start=-1;
+  for(let b=lo;b<=hi+1;b++){
+    const free=b<=hi&&cnt[b]<=maxCross;
+    if(free&&start<0) start=b;
+    if(!free&&start>=0){ const len=b-start; if(!best||len>best.len) best={s:start,len}; start=-1; }
+  }
+  if(!best||best.len*bin<cw*2.5) return null;
+  const gs=L+best.s*bin, ge=L+(best.s+best.len)*bin, gx=(gs+ge)/2;
+  const lyr=ws=>ws.some(w=>/[A-Za-zÄÖÜäöüß]{3,}/.test(w.t)&&!fixChordToken(w.t));
+  let leftLyr=0, rightLyr=0, rightAny=0;
+  for(const l of lines){ const lw=l.words.filter(w=>w.x1<=gs+bin), rw=l.words.filter(w=>w.x0>=ge-bin); if(lyr(lw)) leftLyr++; if(lyr(rw)) rightLyr++; if(rw.length) rightAny++; }
+  if(leftLyr<3||rightLyr<3||rightAny<n*0.2) return null;
+  const header=[], left=[], right=[]; let twoCol=false;
+  for(const l of lines){
+    const crosses=l.words.some(w=>w.x0<ge-bin&&w.x1>gs+bin);
+    if(crosses){ (twoCol?left:header).push({y:l.y,words:l.words.slice()}); continue; }
+    const lw=l.words.filter(w=>(w.x0+w.x1)/2<gx), rw=l.words.filter(w=>(w.x0+w.x1)/2>=gx);
+    if(rw.length) twoCol=true;
+    if(lw.length) (twoCol?left:header).push({y:l.y,words:lw});
+    if(rw.length) right.push({y:l.y,words:rw});
+  }
+  if(!left.length||!right.length) return null;
+  return {header,left,right};
+}
 function reconstruct(pages){
   const out=[];
-  pages.forEach(lines=>{const r=reconstructPage(lines); if(!r.length) return; if(out.length) out.push(''); out.push(...r);});
+  const add=r=>{ if(!r.length) return; if(out.length) out.push(''); out.push(...r); };
+  pages.forEach(lines=>{
+    const sp=splitColumns(lines);
+    if(!sp){ add(reconstructPage(lines)); return; }
+    if(sp.header.length) add(reconstructPage(sp.header));
+    add(reconstructPage(sp.left)); add(reconstructPage(sp.right));
+  });
   return out.join('\n').replace(/\n{3,}/g,'\n\n').trim();
 }
 // Kopf- und Fußzeilen von Webseiten-Ausdrucken, Seitenzahlen, Links, Datumsstempel
@@ -547,17 +601,27 @@ function extractHeader(text){
     if(JUNK.test(lines[i])||metaOf(lines[i])) continue;
     const c=classify(lines[i],notation);
     if(c.type==='label'||(c.type==='chord'&&c.start>0)){idx=i;break;}
-    if(c.type==='chord'){const j=nextFilled(i); if(j<lines.length&&j-i<=2&&classify(lines[j],notation).type==='lyric'&&isLyricLike(lines[j])&&!metaOf(lines[j])){idx=i;break;}}
+    if(c.type==='chord'){const j=nextFilled(i); if(j<lines.length&&j-i<=2&&classify(lines[j],notation).type==='lyric'&&isLyricLike(lines[j])&&!metaOf(lines[j])){idx=i;break;}
+      // Intro-Akkorde vor dem ersten Abschnitt („Em D C“ / Leerzeile / „Verse 1“), aber keine Griffbild-Übersicht („CHORDS“, Griffziffern)
+      let p=i-1; while(p>=0&&!lines[p].trim()) p--;
+      const afterChordsHead=p>=0&&/^\s*(?:chords|akkorde|griffe|used chords)\b/i.test(lines[p]);
+      if(!afterChordsHead&&j<lines.length&&j-i<=3&&classify(lines[j],notation).type==='label'){idx=i;break;}}
     if(c.type==='lyric'&&i>0&&isLyricLike(lines[i])&&/\[[^\]\s]+\]/.test(lines[i])&&chordsIn(lines[i],notation).length){idx=i;break;}
   }
   if(idx<0) idx=0;
   const meta={title:'',artist:'',key:'',capo:0,tuning:'',notation};
   const cands=[];
   for(const raw of lines.slice(0,idx)){
-    const t=raw.trim().replace(/\s{2,}/g,' ');
+    let t=raw.trim().replace(/\s{2,}/g,' ');
     if(!t||JUNK.test(t)) continue;
     const mt=metaOf(t); if(mt){applyMeta(meta,mt);continue;}
-    if(classify(raw,notation).type!=='lyric') continue;
+    // „Diese Kraft Tonart: G“, „Song – Key: A – Capo 2“: Angaben am Zeilenende abtrennen
+    for(let k=0;k<3;k++){ let m2;
+      if((m2=t.match(/^(.*?\S)[\s,;|·–—-]+(?:tonart|key)\s*[:=]?\s*([A-Ha-h](?:#|b|♯|♭|is|es)?(?:m(?!aj)|\s*-?\s*(?:moll|dur|minor|major))?)[\s.)]*$/i))){ applyMeta(meta,{k:'key',v:m2[2].replace(/\s+/g,'')}); t=m2[1].trim(); continue; }
+      if((m2=t.match(/^(.*?\S)[\s,;|·–—(-]+(?:capo|kapo)\s*[:=]?\s*(?:im|on|auf)?\s*(\d{1,2})\b[^\d]*$/i))){ applyMeta(meta,{k:'capo',v:+m2[2]}); t=m2[1].trim(); continue; }
+      break; }
+    t=t.replace(/[\s,;|·–—-]+$/,'');
+    if(classify(t,notation).type!=='lyric') continue;
     if(!/[A-Za-zÄÖÜäöüßÀ-ÿ]{2,}/.test(t)) continue;
     cands.push(t);
   }
@@ -1016,6 +1080,15 @@ $('#spelling').addEventListener('click',e=>{const b=e.target.closest('button'); 
 $('#tabs').addEventListener('click',e=>{const b=e.target.closest('button'); if(!b) return; mode=b.dataset.v; render(); if(mode==='edit') $('#editor').focus();});
 let edT; $('#editor').addEventListener('input',e=>{state.text=e.target.value; state.example=false; clearTimeout(edT); edT=setTimeout(()=>{save();render();},250);});
 $('#exportBtn').addEventListener('click',exportPdf);
+let clearArm=null;
+$('#clearBtn').addEventListener('click',()=>{
+  const b=$('#clearBtn');
+  if(!clearArm){ b.textContent='Wirklich leeren?'; b.classList.add('danger'); clearArm=setTimeout(()=>{clearArm=null; b.textContent='Blatt leeren'; b.classList.remove('danger');},4000); return; }
+  clearTimeout(clearArm); clearArm=null; b.textContent='Blatt leeren'; b.classList.remove('danger');
+  if(job) cancelJob();
+  state={...state,title:'',artist:'',key:'',tuning:'',text:'',origCapo:0,example:false};
+  $('#editor').value=''; setStatus(null); save(); mode='preview'; render(); toast('Blatt geleert');
+});
 $('#shareBtn').addEventListener('click',sharePdf);
 render();
 if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));}
